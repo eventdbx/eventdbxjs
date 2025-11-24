@@ -12,6 +12,9 @@ struct ControlRequest {
     selectAggregate @7 :SelectAggregateRequest;
     createAggregate @8 :CreateAggregateRequest;
     setAggregateArchive @9 :SetAggregateArchiveRequest;
+    createSnapshot @10 :CreateSnapshotRequest;
+    listSnapshots @11 :ListSnapshotsRequest;
+    getSnapshot @12 :GetSnapshotRequest;
   }
 }
 
@@ -27,6 +30,9 @@ struct ControlResponse {
     error @7 :ControlError;
     createAggregate @8 :CreateAggregateResponse;
     setAggregateArchive @9 :SetAggregateArchiveResponse;
+    createSnapshot @10 :CreateSnapshotResponse;
+    listSnapshots @11 :ListSnapshotsResponse;
+    getSnapshot @12 :GetSnapshotResponse;
   }
 }
 
@@ -100,6 +106,8 @@ struct AppendEventRequest {
   hasNote @6 :Bool;
   metadataJson @7 :Text;
   hasMetadata @8 :Bool;
+  publishTargets @9 :List(PublishTarget);
+  hasPublishTargets @10 :Bool;
 }
 
 struct AppendEventResponse {
@@ -116,6 +124,8 @@ struct PatchEventRequest {
   hasNote @6 :Bool;
   metadataJson @7 :Text;
   hasMetadata @8 :Bool;
+  publishTargets @9 :List(PublishTarget);
+  hasPublishTargets @10 :Bool;
 }
 
 struct VerifyAggregateRequest {
@@ -149,6 +159,8 @@ struct CreateAggregateRequest {
   hasNote @6 :Bool;
   metadataJson @7 :Text;
   hasMetadata @8 :Bool;
+  publishTargets @9 :List(PublishTarget);
+  hasPublishTargets @10 :Bool;
 }
 
 struct CreateAggregateResponse {
@@ -166,6 +178,50 @@ struct SetAggregateArchiveRequest {
 
 struct SetAggregateArchiveResponse {
   aggregateJson @0 :Text;
+}
+
+struct CreateSnapshotRequest {
+  token @0 :Text;
+  aggregateType @1 :Text;
+  aggregateId @2 :Text;
+  comment @3 :Text;
+  hasComment @4 :Bool;
+}
+
+struct CreateSnapshotResponse {
+  snapshotJson @0 :Text;
+}
+
+struct PublishTarget {
+  plugin @0 :Text;
+  mode @1 :Text;
+  hasMode @2 :Bool;
+  priority @3 :Text;
+  hasPriority @4 :Bool;
+}
+
+struct ListSnapshotsRequest {
+  token @0 :Text;
+  aggregateType @1 :Text;
+  aggregateId @2 :Text;
+  hasAggregateType @3 :Bool;
+  hasAggregateId @4 :Bool;
+  version @5 :UInt64;
+  hasVersion @6 :Bool;
+}
+
+struct ListSnapshotsResponse {
+  snapshotsJson @0 :Text;
+}
+
+struct GetSnapshotRequest {
+  token @0 :Text;
+  snapshotId @1 :UInt64;
+}
+
+struct GetSnapshotResponse {
+  found @0 :Bool;
+  snapshotJson @1 :Text;
 }
 
 struct ControlError {

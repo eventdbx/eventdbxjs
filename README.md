@@ -132,9 +132,12 @@ main().catch((err) => {
 | `client.archive(aggregateType, aggregateId, options?)`                      | Mark an aggregate as archived and return the updated snapshot.                             |
 | `client.restore(aggregateType, aggregateId, options?)`                      | Restore an archived aggregate and return the updated snapshot.                             |
 | `client.patch(aggregateType, aggregateId, eventType, operations, options?)` | Apply an RFC 6902 JSON Patch and return the updated aggregate snapshot.                    |
+| `client.createSnapshot(aggregateType, aggregateId, options?)`               | Create a point-in-time snapshot for an aggregate and return it.                            |
+| `client.listSnapshots(options?)`                                            | List snapshots, optionally filtering by aggregate type/ID or version.                      |
+| `client.getSnapshot(snapshotId, options?)`                                  | Fetch a snapshot by ID or `null` when it does not exist.                                   |
 | `client.select(aggregateType, aggregateId, fields)`                         | Resolve with a JSON object containing only the requested fields when the aggregate exists. |
 
-`PageOptions` supports `{ take, cursor, includeArchived, archivedOnly, token }` for cursor-based pagination. Both `client.list` and `client.events` resolve to `{ items, nextCursor }` so you can feed the returned cursor into the next call. Set `archivedOnly` to `true` to request archived aggregates exclusively—`includeArchived` is inferred when you do. When appending events with `client.apply`, the aggregate must already exist; use `client.create` to emit the first event. `client.create` always requires an `eventType` and accepts optional `payload`, `metadata`, and `note` to seed the initial snapshot. Use `client.archive`/`client.restore` with `{ note }` to record why an aggregate changed archive state.
+`PageOptions` supports `{ take, cursor, includeArchived, archivedOnly, token }` for cursor-based pagination. Both `client.list` and `client.events` resolve to `{ items, nextCursor }` so you can feed the returned cursor into the next call. Set `archivedOnly` to `true` to request archived aggregates exclusively—`includeArchived` is inferred when you do. When appending events with `client.apply`, the aggregate must already exist; use `client.create` to emit the first event. `client.create` always requires an `eventType` and accepts optional `payload`, `metadata`, `publishTargets`, and `note` to seed the initial snapshot. Use `client.archive`/`client.restore` with `{ note }` to record why an aggregate changed archive state. Event mutations (`apply`, `create`, `patch`) also accept `publishTargets` to direct downstream plugins.
 
 Aggregate sorting now matches the EventDBX CLI: pass fields like `created_at`, `updated_at`, `aggregate_type`, `aggregate_id`, or `archived`, optionally with `:asc`/`:desc` (e.g. `created_at:asc,aggregate_id:desc`). The `sort` option should be provided as a string in that format.
 
@@ -220,11 +223,18 @@ interface PageResult {
   nextCursor?: string
 }
 
+interface PublishTargetOptions {
+  plugin: string
+  mode?: 'all' | 'event-only' | 'state-only' | 'schema-only' | 'event-and-schema' | 'extensions-only' // default: 'all'
+  priority?: 'high' | 'normal' | 'low'
+}
+
 interface AppendOptions {
   payload?: Json
   metadata?: Json
   note?: string
   token?: string
+  publishTargets?: PublishTargetOptions[]
 }
 
 interface CreateAggregateOptions {
@@ -232,6 +242,7 @@ interface CreateAggregateOptions {
   payload?: Json
   metadata?: Json
   note?: string
+  publishTargets?: PublishTargetOptions[]
 }
 
 interface SetArchiveOptions {
@@ -244,6 +255,7 @@ interface PatchOptions {
   metadata?: Json
   note?: string
   token?: string
+  publishTargets?: PublishTargetOptions[]
 }
 
 interface ClientEndpoint {
@@ -308,6 +320,18 @@ class DbxClient {
     operations: JsonPatch[],
     opts?: PatchOptions,
   ): Promise<Aggregate<TState>>
+  createSnapshot(
+    aggregateType: string,
+    aggregateId: string,
+    opts?: { token?: string; comment?: string },
+  ): Promise<Json>
+  listSnapshots(opts?: {
+    aggregateType?: string
+    aggregateId?: string
+    version?: number
+    token?: string
+  }): Promise<Json[]>
+  getSnapshot(snapshotId: number, opts?: { token?: string }): Promise<Json | null>
   select(aggregateType: string, aggregateId: string, fields: string[]): Promise<Json | null>
 }
 
