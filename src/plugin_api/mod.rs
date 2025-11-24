@@ -10,6 +10,7 @@ mod noise;
 
 use capnp::message::{Builder, ReaderOptions};
 use capnp::serialize::write_message_to_words;
+use capnp::struct_list::Builder as StructListBuilder;
 use chrono::{DateTime, Utc};
 use futures::io::AsyncWriteExt;
 use noise::{perform_client_handshake, read_encrypted_frame, write_encrypted_frame, NoiseError};
@@ -626,16 +627,6 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
-    let publish_target_len = request
-      .publish_targets
-      .as_ref()
-      .map(|targets| {
-        u32::try_from(targets.len()).map_err(|_| {
-          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
-        })
-      })
-      .transpose()?;
-
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
     {
@@ -663,28 +654,10 @@ impl ControlClient {
         body.set_note("".into());
       }
       if let Some(targets) = request.publish_targets.as_ref() {
+        let len = publish_targets_len(targets)?;
         body.set_has_publish_targets(true);
-        let mut list = body
-          .reborrow()
-          .init_publish_targets(publish_target_len.unwrap_or(0));
-        for (idx, target) in targets.iter().enumerate() {
-          let mut slot = list.reborrow().get(idx as u32);
-          slot.set_plugin(target.plugin.as_str().into());
-          if let Some(mode) = target.mode.as_deref() {
-            slot.set_has_mode(true);
-            slot.set_mode(mode.into());
-          } else {
-            slot.set_has_mode(false);
-            slot.set_mode("".into());
-          }
-          if let Some(priority) = target.priority.as_deref() {
-            slot.set_has_priority(true);
-            slot.set_priority(priority.into());
-          } else {
-            slot.set_has_priority(false);
-            slot.set_priority("".into());
-          }
-        }
+        let mut list = body.reborrow().init_publish_targets(len);
+        write_publish_targets(&mut list, targets);
       } else {
         body.set_has_publish_targets(false);
         body.reborrow().init_publish_targets(0);
@@ -778,16 +751,6 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
-    let publish_target_len = request
-      .publish_targets
-      .as_ref()
-      .map(|targets| {
-        u32::try_from(targets.len()).map_err(|_| {
-          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
-        })
-      })
-      .transpose()?;
-
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
     {
@@ -815,28 +778,10 @@ impl ControlClient {
         body.set_note("".into());
       }
       if let Some(targets) = request.publish_targets.as_ref() {
+        let len = publish_targets_len(targets)?;
         body.set_has_publish_targets(true);
-        let mut list = body
-          .reborrow()
-          .init_publish_targets(publish_target_len.unwrap_or(0));
-        for (idx, target) in targets.iter().enumerate() {
-          let mut slot = list.reborrow().get(idx as u32);
-          slot.set_plugin(target.plugin.as_str().into());
-          if let Some(mode) = target.mode.as_deref() {
-            slot.set_has_mode(true);
-            slot.set_mode(mode.into());
-          } else {
-            slot.set_has_mode(false);
-            slot.set_mode("".into());
-          }
-          if let Some(priority) = target.priority.as_deref() {
-            slot.set_has_priority(true);
-            slot.set_priority(priority.into());
-          } else {
-            slot.set_has_priority(false);
-            slot.set_priority("".into());
-          }
-        }
+        let mut list = body.reborrow().init_publish_targets(len);
+        write_publish_targets(&mut list, targets);
       } else {
         body.set_has_publish_targets(false);
         body.reborrow().init_publish_targets(0);
@@ -883,16 +828,6 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
-    let publish_target_len = request
-      .publish_targets
-      .as_ref()
-      .map(|targets| {
-        u32::try_from(targets.len()).map_err(|_| {
-          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
-        })
-      })
-      .transpose()?;
-
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
     {
@@ -920,28 +855,10 @@ impl ControlClient {
         body.set_note("".into());
       }
       if let Some(targets) = request.publish_targets.as_ref() {
+        let len = publish_targets_len(targets)?;
         body.set_has_publish_targets(true);
-        let mut list = body
-          .reborrow()
-          .init_publish_targets(publish_target_len.unwrap_or(0));
-        for (idx, target) in targets.iter().enumerate() {
-          let mut slot = list.reborrow().get(idx as u32);
-          slot.set_plugin(target.plugin.as_str().into());
-          if let Some(mode) = target.mode.as_deref() {
-            slot.set_has_mode(true);
-            slot.set_mode(mode.into());
-          } else {
-            slot.set_has_mode(false);
-            slot.set_mode("".into());
-          }
-          if let Some(priority) = target.priority.as_deref() {
-            slot.set_has_priority(true);
-            slot.set_priority(priority.into());
-          } else {
-            slot.set_has_priority(false);
-            slot.set_priority("".into());
-          }
-        }
+        let mut list = body.reborrow().init_publish_targets(len);
+        write_publish_targets(&mut list, targets);
       } else {
         body.set_has_publish_targets(false);
         body.reborrow().init_publish_targets(0);
@@ -1213,6 +1130,34 @@ impl ControlClient {
 impl From<NoiseError> for ControlClientError {
   fn from(err: NoiseError) -> Self {
     ControlClientError::Protocol(err.to_string())
+  }
+}
+
+type PublishTargetListBuilder<'a> = StructListBuilder<'a, control_capnp::publish_target::Owned>;
+
+fn publish_targets_len(targets: &[PublishTargetSpec]) -> ControlResult<u32> {
+  u32::try_from(targets.len())
+    .map_err(|_| ControlClientError::Protocol("publishTargets length exceeds u32 range".into()))
+}
+
+fn write_publish_targets(list: &mut PublishTargetListBuilder<'_>, targets: &[PublishTargetSpec]) {
+  for (idx, target) in targets.iter().enumerate() {
+    let mut slot = list.reborrow().get(idx as u32);
+    slot.set_plugin(target.plugin.as_str().into());
+    if let Some(mode) = target.mode.as_deref() {
+      slot.set_has_mode(true);
+      slot.set_mode(mode.into());
+    } else {
+      slot.set_has_mode(false);
+      slot.set_mode("".into());
+    }
+    if let Some(priority) = target.priority.as_deref() {
+      slot.set_has_priority(true);
+      slot.set_priority(priority.into());
+    } else {
+      slot.set_has_priority(false);
+      slot.set_priority("".into());
+    }
   }
 }
 
