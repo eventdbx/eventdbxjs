@@ -13,7 +13,8 @@ pub mod plugin_api;
 
 use crate::plugin_api::{
   AggregateStateView, AppendEventRequest, ControlClient, ControlClientError, ControlResult,
-  CreateAggregateRequest, PatchEventRequest, SetAggregateArchiveRequest, StoredEventRecord,
+  CreateAggregateRequest, CreateSnapshotRequest, GetSnapshotRequest, ListSnapshotsRequest,
+  PatchEventRequest, PublishTargetSpec, SetAggregateArchiveRequest, StoredEventRecord,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -213,6 +214,15 @@ pub struct PageResult {
   pub next_cursor: Option<String>,
 }
 
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct PublishTargetOptions {
+  pub plugin: String,
+  pub mode: Option<String>,
+  pub priority: Option<String>,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
@@ -221,6 +231,7 @@ pub struct AppendOptions {
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
   pub token: Option<String>,
+  pub publish_targets: Option<Vec<PublishTargetOptions>>,
 }
 
 #[napi(object)]
@@ -228,6 +239,7 @@ pub struct PatchOptions {
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
   pub token: Option<String>,
+  pub publish_targets: Option<Vec<PublishTargetOptions>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -238,6 +250,7 @@ pub struct CreateAggregateOptions {
   pub payload: Option<serde_json::Value>,
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
+  pub publish_targets: Option<Vec<PublishTargetOptions>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -249,6 +262,34 @@ pub struct SetArchiveOptions {
   #[serde(rename = "comment")]
   #[napi(js_name = "comment")]
   pub legacy_comment: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct CreateSnapshotOptions {
+  pub token: Option<String>,
+  pub comment: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct ListSnapshotsOptions {
+  #[napi(js_name = "aggregateType")]
+  pub aggregate_type: Option<String>,
+  #[napi(js_name = "aggregateId")]
+  pub aggregate_id: Option<String>,
+  #[napi(ts_type = "bigint | number")]
+  pub version: Option<i64>,
+  pub token: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[napi(object)]
+pub struct GetSnapshotOptions {
+  pub token: Option<String>,
 }
 
 #[napi]
@@ -562,8 +603,10 @@ impl DbxClient {
       metadata,
       note,
       token,
+      publish_targets,
     } = opts;
 
+    let publish_targets = map_publish_targets(publish_targets)?;
     let token = token
       .or_else(|| self.config.token.clone())
       .unwrap_or_default();
@@ -576,6 +619,7 @@ impl DbxClient {
       payload,
       metadata,
       note,
+      publish_targets,
     };
 
     match self
@@ -614,7 +658,9 @@ impl DbxClient {
       payload,
       metadata,
       note,
+      publish_targets,
     } = opts;
+    let publish_targets = map_publish_targets(publish_targets)?;
     let token = token
       .or_else(|| self.config.token.clone())
       .unwrap_or_default();
@@ -627,6 +673,7 @@ impl DbxClient {
       payload,
       metadata,
       note,
+      publish_targets,
     };
 
     match self
@@ -737,12 +784,15 @@ impl DbxClient {
       metadata: None,
       note: None,
       token: None,
+      publish_targets: None,
     });
     let PatchOptions {
       metadata,
       note,
       token,
+      publish_targets,
     } = opts;
+    let publish_targets = map_publish_targets(publish_targets)?;
     let token = token
       .or_else(|| self.config.token.clone())
       .unwrap_or_default();
@@ -758,6 +808,7 @@ impl DbxClient {
       patch,
       metadata,
       note,
+      publish_targets,
     };
 
     match self
@@ -807,6 +858,123 @@ impl DbxClient {
         }
       }
     }
+  }
+
+  /// Create a snapshot for the provided aggregate.
+  #[napi(js_name = "createSnapshot")]
+  pub async fn create_snapshot(
+    &self,
+    aggregate_type: String,
+    aggregate_id: String,
+    options: Option<CreateSnapshotOptions>,
+  ) -> napi::Result<serde_json::Value> {
+    let opts = options.unwrap_or_default();
+    let comment = opts
+      .comment
+      .map(|value| value.trim().to_owned())
+      .filter(|value| !value.is_empty());
+    let token = opts
+      .token
+      .or_else(|| self.config.token.clone())
+      .unwrap_or_default();
+    let request = CreateSnapshotRequest {
+      token,
+      aggregate_type,
+      aggregate_id,
+      comment,
+    };
+
+    let snapshot = self
+      .call_with_retry({
+        let request = request.clone();
+        move |client| {
+          let req = request.clone();
+          Box::pin(async move { client.create_snapshot(req).await })
+        }
+      })
+      .await
+      .map_err(control_err_to_napi)?;
+    Ok(snapshot)
+  }
+
+  /// List snapshots with optional aggregate filters.
+  #[napi(js_name = "listSnapshots")]
+  pub async fn list_snapshots(
+    &self,
+    options: Option<ListSnapshotsOptions>,
+  ) -> napi::Result<Vec<serde_json::Value>> {
+    let opts = options.unwrap_or_default();
+    let aggregate_type = opts
+      .aggregate_type
+      .map(|value| value.trim().to_owned())
+      .filter(|value| !value.is_empty());
+    let aggregate_id = opts
+      .aggregate_id
+      .map(|value| value.trim().to_owned())
+      .filter(|value| !value.is_empty());
+    let version = match opts.version {
+      Some(value) if value < 0 => {
+        return Err(napi_err(
+          Status::InvalidArg,
+          "version must be a non-negative integer",
+        ))
+      }
+      Some(value) => Some(u64::try_from(value).unwrap_or(0)),
+      None => None,
+    };
+    let request = ListSnapshotsRequest {
+      token: opts
+        .token
+        .or_else(|| self.config.token.clone())
+        .unwrap_or_default(),
+      aggregate_type,
+      aggregate_id,
+      version,
+    };
+
+    let snapshots = self
+      .call_with_retry({
+        let request = request.clone();
+        move |client| {
+          let req = request.clone();
+          Box::pin(async move { client.list_snapshots(req).await })
+        }
+      })
+      .await
+      .map_err(control_err_to_napi)?;
+    Ok(snapshots)
+  }
+
+  /// Fetch a snapshot by identifier.
+  #[napi(js_name = "getSnapshot")]
+  pub async fn get_snapshot(
+    &self,
+    #[napi(ts_arg_type = "bigint | number")] snapshot_id: i64,
+    options: Option<GetSnapshotOptions>,
+  ) -> napi::Result<Option<serde_json::Value>> {
+    let token = options
+      .and_then(|opts| opts.token)
+      .or_else(|| self.config.token.clone())
+      .unwrap_or_default();
+    let snapshot_id = u64::try_from(snapshot_id).map_err(|_| {
+      napi_err(
+        Status::InvalidArg,
+        "snapshotId must be a non-negative integer",
+      )
+    })?;
+    let request = GetSnapshotRequest { token, snapshot_id };
+
+    let snapshot = self
+      .call_with_retry({
+        let request = request.clone();
+        move |client| {
+          let req = request.clone();
+          Box::pin(async move { client.get_snapshot(req).await })
+        }
+      })
+      .await
+      .map_err(control_err_to_napi)?;
+    Ok(snapshot)
   }
 
   fn should_treat_as_ok(&self, operation: &str, err: &ControlClientError) -> bool {
@@ -931,6 +1099,77 @@ pub fn create_client(options: Option<ClientOptions>) -> DbxClient {
   DbxClient::new(options)
 }
 
+fn map_publish_targets(
+  publish_targets: Option<Vec<PublishTargetOptions>>,
+) -> napi::Result<Option<Vec<PublishTargetSpec>>> {
+  publish_targets
+    .map(|targets| {
+      targets
+        .into_iter()
+        .map(|target| {
+          let plugin = target.plugin.trim().to_owned();
+          if plugin.is_empty() {
+            return Err(napi_err(
+              Status::InvalidArg,
+              "publish target plugin is required",
+            ));
+          }
+          let mode = match target.mode {
+            Some(value) => {
+              let trimmed = value.trim();
+              if trimmed.is_empty() {
+                None
+              } else {
+                let normalized = trimmed.to_ascii_lowercase();
+                match normalized.as_str() {
+                  "all"
+                  | "event-only"
+                  | "state-only"
+                  | "schema-only"
+                  | "event-and-schema"
+                  | "extensions-only" => Some(normalized),
+                  _ => {
+                    return Err(napi_err(
+                      Status::InvalidArg,
+                      "publish target mode must be one of: all, event-only, state-only, schema-only, event-and-schema, extensions-only",
+                    ))
+                  }
+                }
+              }
+            }
+            None => None,
+          };
+          let priority = match target.priority {
+            Some(value) => {
+              let trimmed = value.trim();
+              if trimmed.is_empty() {
+                None
+              } else {
+                let normalized = trimmed.to_ascii_lowercase();
+                match normalized.as_str() {
+                  "high" | "normal" | "low" => Some(normalized),
+                  _ => {
+                    return Err(napi_err(
+                      Status::InvalidArg,
+                      "publish target priority must be one of: high, normal, low",
+                    ))
+                  }
+                }
+              }
+            }
+            None => None,
+          };
+          Ok(PublishTargetSpec {
+            plugin,
+            mode,
+            priority,
+          })
+        })
+        .collect::<napi::Result<Vec<_>>>()
+    })
+    .transpose()
+}
+
 fn ok_response_value() -> JsonValue {
   JsonValue::String("Ok".into())
 }
@@ -986,6 +1225,7 @@ fn napi_err(status: Status, reason: impl Into<String>) -> napi::Error {
 mod tests {
   use super::*;
   use chrono::Utc;
+  use napi::Status;
   use std::collections::BTreeMap;
   use std::sync::Mutex;
   use std::time::Duration;
@@ -1134,5 +1374,74 @@ mod tests {
     assert_eq!(round_trip.aggregate_type, record.aggregate_type);
     assert_eq!(round_trip.payload, record.payload);
     assert_eq!(round_trip.hash, record.hash);
+  }
+
+  #[test]
+  fn publish_targets_accept_valid_values_and_normalize() {
+    let targets = vec![PublishTargetOptions {
+      plugin: "plugin-a".into(),
+      mode: Some("Event-Only".into()),
+      priority: Some("High".into()),
+    }];
+
+    let mapped = map_publish_targets(Some(targets))
+      .expect("expected ok")
+      .expect("expected list");
+    assert_eq!(mapped.len(), 1);
+    let target = &mapped[0];
+    assert_eq!(target.plugin, "plugin-a");
+    assert_eq!(target.mode.as_deref(), Some("event-only"));
+    assert_eq!(target.priority.as_deref(), Some("high"));
+  }
+
+  #[test]
+  fn publish_targets_reject_invalid_mode() {
+    let targets = vec![PublishTargetOptions {
+      plugin: "plugin-a".into(),
+      mode: Some("bogus".into()),
+      priority: None,
+    }];
+
+    let err = map_publish_targets(Some(targets)).expect_err("expected mode error");
+    assert_eq!(err.status, Status::InvalidArg);
+    assert!(
+      err.reason.contains("mode must be one of"),
+      "unexpected reason: {}",
+      err.reason
+    );
+  }
+
+  #[test]
+  fn publish_targets_reject_invalid_priority() {
+    let targets = vec![PublishTargetOptions {
+      plugin: "plugin-a".into(),
+      mode: Some("all".into()),
+      priority: Some("urgent".into()),
+    }];
+
+    let err = map_publish_targets(Some(targets)).expect_err("expected priority error");
+    assert_eq!(err.status, Status::InvalidArg);
+    assert!(
+      err.reason.contains("priority must be one of"),
+      "unexpected reason: {}",
+      err.reason
+    );
+  }
+
+  #[test]
+  fn publish_targets_reject_empty_plugin() {
+    let targets = vec![PublishTargetOptions {
+      plugin: "   ".into(),
+      mode: Some("all".into()),
+      priority: Some("normal".into()),
+    }];
+
+    let err = map_publish_targets(Some(targets)).expect_err("expected plugin error");
+    assert_eq!(err.status, Status::InvalidArg);
+    assert!(
+      err.reason.contains("plugin is required"),
+      "unexpected reason: {}",
+      err.reason
+    );
   }
 }

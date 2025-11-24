@@ -101,6 +101,8 @@ pub struct AppendEventRequest {
   pub metadata: Option<JsonValue>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub note: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub publish_targets: Option<Vec<PublishTargetSpec>>,
 }
 
 /// Request payload for creating an aggregate, optionally emitting an initial event.
@@ -116,6 +118,8 @@ pub struct CreateAggregateRequest {
   pub metadata: Option<JsonValue>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub note: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub publish_targets: Option<Vec<PublishTargetSpec>>,
 }
 
 /// Request payload for toggling an aggregate's archived state.
@@ -189,6 +193,45 @@ pub struct PatchEventRequest {
   pub metadata: Option<JsonValue>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub note: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub publish_targets: Option<Vec<PublishTargetSpec>>,
+}
+
+/// Publish target specification passed to the control socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishTargetSpec {
+  pub plugin: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub mode: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub priority: Option<String>,
+}
+
+/// Request payload for creating a snapshot of a specific aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CreateSnapshotRequest {
+  pub token: String,
+  pub aggregate_type: String,
+  pub aggregate_id: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub comment: Option<String>,
+}
+
+/// Request payload for listing snapshots with optional filters.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListSnapshotsRequest {
+  pub token: String,
+  pub aggregate_type: Option<String>,
+  pub aggregate_id: Option<String>,
+  pub version: Option<u64>,
+}
+
+/// Request payload for fetching a snapshot by identifier.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GetSnapshotRequest {
+  pub token: String,
+  pub snapshot_id: u64,
 }
 
 /// Generic page of results returned by cursor-based control calls.
@@ -583,6 +626,15 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
+    let publish_target_len = request
+      .publish_targets
+      .as_ref()
+      .map(|targets| {
+        u32::try_from(targets.len()).map_err(|_| {
+          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
+        })
+      })
+      .transpose()?;
 
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
@@ -609,6 +661,33 @@ impl ControlClient {
       } else {
         body.set_has_note(false);
         body.set_note("".into());
+      }
+      if let Some(targets) = request.publish_targets.as_ref() {
+        body.set_has_publish_targets(true);
+        let mut list = body
+          .reborrow()
+          .init_publish_targets(publish_target_len.unwrap_or(0));
+        for (idx, target) in targets.iter().enumerate() {
+          let mut slot = list.reborrow().get(idx as u32);
+          slot.set_plugin(target.plugin.as_str().into());
+          if let Some(mode) = target.mode.as_deref() {
+            slot.set_has_mode(true);
+            slot.set_mode(mode.into());
+          } else {
+            slot.set_has_mode(false);
+            slot.set_mode("".into());
+          }
+          if let Some(priority) = target.priority.as_deref() {
+            slot.set_has_priority(true);
+            slot.set_priority(priority.into());
+          } else {
+            slot.set_has_priority(false);
+            slot.set_priority("".into());
+          }
+        }
+      } else {
+        body.set_has_publish_targets(false);
+        body.reborrow().init_publish_targets(0);
       }
     }
 
@@ -699,6 +778,15 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
+    let publish_target_len = request
+      .publish_targets
+      .as_ref()
+      .map(|targets| {
+        u32::try_from(targets.len()).map_err(|_| {
+          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
+        })
+      })
+      .transpose()?;
 
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
@@ -725,6 +813,33 @@ impl ControlClient {
       } else {
         body.set_has_note(false);
         body.set_note("".into());
+      }
+      if let Some(targets) = request.publish_targets.as_ref() {
+        body.set_has_publish_targets(true);
+        let mut list = body
+          .reborrow()
+          .init_publish_targets(publish_target_len.unwrap_or(0));
+        for (idx, target) in targets.iter().enumerate() {
+          let mut slot = list.reborrow().get(idx as u32);
+          slot.set_plugin(target.plugin.as_str().into());
+          if let Some(mode) = target.mode.as_deref() {
+            slot.set_has_mode(true);
+            slot.set_mode(mode.into());
+          } else {
+            slot.set_has_mode(false);
+            slot.set_mode("".into());
+          }
+          if let Some(priority) = target.priority.as_deref() {
+            slot.set_has_priority(true);
+            slot.set_priority(priority.into());
+          } else {
+            slot.set_has_priority(false);
+            slot.set_priority("".into());
+          }
+        }
+      } else {
+        body.set_has_publish_targets(false);
+        body.reborrow().init_publish_targets(0);
       }
     }
 
@@ -768,6 +883,15 @@ impl ControlClient {
       .as_ref()
       .map(serde_json::to_string)
       .transpose()?;
+    let publish_target_len = request
+      .publish_targets
+      .as_ref()
+      .map(|targets| {
+        u32::try_from(targets.len()).map_err(|_| {
+          ControlClientError::Protocol("publishTargets length exceeds u32 range".into())
+        })
+      })
+      .transpose()?;
 
     let request_id = self.next_request_id();
     let mut message = Builder::new_default();
@@ -795,6 +919,33 @@ impl ControlClient {
         body.set_has_note(false);
         body.set_note("".into());
       }
+      if let Some(targets) = request.publish_targets.as_ref() {
+        body.set_has_publish_targets(true);
+        let mut list = body
+          .reborrow()
+          .init_publish_targets(publish_target_len.unwrap_or(0));
+        for (idx, target) in targets.iter().enumerate() {
+          let mut slot = list.reborrow().get(idx as u32);
+          slot.set_plugin(target.plugin.as_str().into());
+          if let Some(mode) = target.mode.as_deref() {
+            slot.set_has_mode(true);
+            slot.set_mode(mode.into());
+          } else {
+            slot.set_has_mode(false);
+            slot.set_mode("".into());
+          }
+          if let Some(priority) = target.priority.as_deref() {
+            slot.set_has_priority(true);
+            slot.set_priority(priority.into());
+          } else {
+            slot.set_has_priority(false);
+            slot.set_priority("".into());
+          }
+        }
+      } else {
+        body.set_has_publish_targets(false);
+        body.reborrow().init_publish_targets(0);
+      }
     }
 
     self
@@ -814,6 +965,155 @@ impl ControlClient {
           }
           _ => Err(ControlClientError::Protocol(
             "unexpected response to patchEvent".into(),
+          )),
+        }
+      })
+      .await
+  }
+
+  /// Create a snapshot for the provided aggregate instance.
+  pub async fn create_snapshot(
+    &mut self,
+    request: CreateSnapshotRequest,
+  ) -> ControlResult<JsonValue> {
+    let request_id = self.next_request_id();
+    let mut message = Builder::new_default();
+    {
+      let mut cap_request = message.init_root::<control_capnp::control_request::Builder>();
+      cap_request.set_id(request_id);
+      let payload = cap_request.reborrow().init_payload();
+      let mut body = payload.init_create_snapshot();
+      body.set_token(request.token.as_str().into());
+      body.set_aggregate_type(request.aggregate_type.as_str().into());
+      body.set_aggregate_id(request.aggregate_id.as_str().into());
+      if let Some(comment) = request.comment.as_ref() {
+        body.set_has_comment(true);
+        body.set_comment(comment.as_str().into());
+      } else {
+        body.set_has_comment(false);
+        body.set_comment("".into());
+      }
+    }
+
+    self
+      .send_and_parse(message, request_id, |response| {
+        match response.get_payload().which().map_err(|_| {
+          ControlClientError::Protocol("unexpected response payload for createSnapshot".into())
+        })? {
+          control_capnp::control_response::payload::CreateSnapshot(resp) => {
+            let resp = resp.map_err(ControlClientError::Capnp)?;
+            let json = read_text_field(resp.get_snapshot_json(), "snapshot_json")?;
+            let snapshot = serde_json::from_str::<JsonValue>(&json)?;
+            Ok(snapshot)
+          }
+          control_capnp::control_response::payload::Error(err) => {
+            let err = err.map_err(ControlClientError::Capnp)?;
+            Err(server_error(err))
+          }
+          _ => Err(ControlClientError::Protocol(
+            "unexpected response to createSnapshot".into(),
+          )),
+        }
+      })
+      .await
+  }
+
+  /// List snapshots, optionally filtering by aggregate identity or version.
+  pub async fn list_snapshots(
+    &mut self,
+    request: ListSnapshotsRequest,
+  ) -> ControlResult<Vec<JsonValue>> {
+    let request_id = self.next_request_id();
+    let mut message = Builder::new_default();
+    {
+      let mut cap_request = message.init_root::<control_capnp::control_request::Builder>();
+      cap_request.set_id(request_id);
+      let payload = cap_request.reborrow().init_payload();
+      let mut body = payload.init_list_snapshots();
+      body.set_token(request.token.as_str().into());
+      if let Some(kind) = request.aggregate_type.as_ref() {
+        body.set_has_aggregate_type(true);
+        body.set_aggregate_type(kind.as_str().into());
+      } else {
+        body.set_has_aggregate_type(false);
+        body.set_aggregate_type("".into());
+      }
+      if let Some(id) = request.aggregate_id.as_ref() {
+        body.set_has_aggregate_id(true);
+        body.set_aggregate_id(id.as_str().into());
+      } else {
+        body.set_has_aggregate_id(false);
+        body.set_aggregate_id("".into());
+      }
+      if let Some(version) = request.version {
+        body.set_has_version(true);
+        body.set_version(version);
+      } else {
+        body.set_has_version(false);
+        body.set_version(0);
+      }
+    }
+
+    self
+      .send_and_parse(message, request_id, |response| {
+        match response.get_payload().which().map_err(|_| {
+          ControlClientError::Protocol("unexpected response payload for listSnapshots".into())
+        })? {
+          control_capnp::control_response::payload::ListSnapshots(resp) => {
+            let resp = resp.map_err(ControlClientError::Capnp)?;
+            let json = read_text_field(resp.get_snapshots_json(), "snapshots_json")?;
+            let snapshots = serde_json::from_str::<Vec<JsonValue>>(&json)?;
+            Ok(snapshots)
+          }
+          control_capnp::control_response::payload::Error(err) => {
+            let err = err.map_err(ControlClientError::Capnp)?;
+            Err(server_error(err))
+          }
+          _ => Err(ControlClientError::Protocol(
+            "unexpected response to listSnapshots".into(),
+          )),
+        }
+      })
+      .await
+  }
+
+  /// Fetch an immutable snapshot by its identifier.
+  pub async fn get_snapshot(
+    &mut self,
+    request: GetSnapshotRequest,
+  ) -> ControlResult<Option<JsonValue>> {
+    let request_id = self.next_request_id();
+    let mut message = Builder::new_default();
+    {
+      let mut cap_request = message.init_root::<control_capnp::control_request::Builder>();
+      cap_request.set_id(request_id);
+      let payload = cap_request.reborrow().init_payload();
+      let mut body = payload.init_get_snapshot();
+      body.set_token(request.token.as_str().into());
+      body.set_snapshot_id(request.snapshot_id);
+    }
+
+    self
+      .send_and_parse(message, request_id, |response| {
+        match response.get_payload().which().map_err(|_| {
+          ControlClientError::Protocol("unexpected response payload for getSnapshot".into())
+        })? {
+          control_capnp::control_response::payload::GetSnapshot(resp) => {
+            let resp = resp.map_err(ControlClientError::Capnp)?;
+            if resp.get_found() {
+              let json = read_text_field(resp.get_snapshot_json(), "snapshot_json")?;
+              let snapshot = serde_json::from_str::<JsonValue>(&json)?;
+              Ok(Some(snapshot))
+            } else {
+              Ok(None)
+            }
+          }
+          control_capnp::control_response::payload::Error(err) => {
+            let err = err.map_err(ControlClientError::Capnp)?;
+            Err(server_error(err))
+          }
+          _ => Err(ControlClientError::Protocol(
+            "unexpected response to getSnapshot".into(),
           )),
         }
       })
