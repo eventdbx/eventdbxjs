@@ -574,3 +574,5 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.DbxClient = nativeBinding.DbxClient
 module.exports.createClient = nativeBinding.createClient
+module.exports.PayloadMode = nativeBinding.PayloadMode
+module.exports.Priority = nativeBinding.Priority
