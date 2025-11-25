@@ -110,3 +110,5 @@ const { instance: __napiInstance, module: __wasiModule, napiModule: __napiModule
 module.exports = __napiModule.exports
 module.exports.DbxClient = __napiModule.exports.DbxClient
 module.exports.createClient = __napiModule.exports.createClient
+module.exports.PayloadMode = __napiModule.exports.PayloadMode
+module.exports.Priority = __napiModule.exports.Priority

@@ -19,9 +19,88 @@ use crate::plugin_api::{
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::Deserialize;
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+#[napi(js_name = "JsonValue")]
+pub type JsonValue = serde_json::Value;
+
+#[napi(object)]
+pub struct JsonPatchAddReplaceTest {
+  #[napi(ts_type = "'add' | 'replace' | 'test'")]
+  pub op: String,
+  pub path: String,
+  #[napi(ts_type = "JsonValue")]
+  pub value: JsonValue,
+}
+
+#[napi(object)]
+pub struct JsonPatchRemove {
+  #[napi(ts_type = "'remove'")]
+  pub op: String,
+  pub path: String,
+}
+
+#[napi(object)]
+pub struct JsonPatchMoveCopy {
+  #[napi(ts_type = "'move' | 'copy'")]
+  pub op: String,
+  pub from: String,
+  pub path: String,
+}
+
+#[napi(js_name = "JsonPatch")]
+pub type JsonPatch = Either3<JsonPatchAddReplaceTest, JsonPatchRemove, JsonPatchMoveCopy>;
+
+#[napi(string_enum)]
+pub enum PayloadMode {
+  #[napi(value = "all")]
+  All,
+  #[napi(value = "event-only")]
+  EventOnly,
+  #[napi(value = "state-only")]
+  StateOnly,
+  #[napi(value = "schema-only")]
+  SchemaOnly,
+  #[napi(value = "event-and-schema")]
+  EventAndSchema,
+  #[napi(value = "extensions-only")]
+  ExtensionsOnly,
+}
+
+impl PayloadMode {
+  fn as_str(&self) -> &'static str {
+    match self {
+      Self::All => "all",
+      Self::EventOnly => "event-only",
+      Self::StateOnly => "state-only",
+      Self::SchemaOnly => "schema-only",
+      Self::EventAndSchema => "event-and-schema",
+      Self::ExtensionsOnly => "extensions-only",
+    }
+  }
+}
+
+#[napi(string_enum)]
+pub enum Priority {
+  #[napi(value = "high")]
+  High,
+  #[napi(value = "normal")]
+  Normal,
+  #[napi(value = "low")]
+  Low,
+}
+
+impl Priority {
+  fn as_str(&self) -> &'static str {
+    match self {
+      Self::High => "high",
+      Self::Normal => "normal",
+      Self::Low => "low",
+    }
+  }
+}
 
 #[derive(Clone, Debug)]
 struct ClientConfig {
@@ -219,7 +298,9 @@ pub struct PageResult {
 #[napi(object)]
 pub struct PublishTargetOptions {
   pub plugin: String,
+  #[napi(ts_type = "PayloadMode")]
   pub mode: Option<String>,
+  #[napi(ts_type = "Priority")]
   pub priority: Option<String>,
 }
 
@@ -227,7 +308,9 @@ pub struct PublishTargetOptions {
 #[serde(rename_all = "camelCase")]
 #[napi(object)]
 pub struct AppendOptions {
+  #[napi(ts_type = "JsonValue")]
   pub payload: Option<serde_json::Value>,
+  #[napi(ts_type = "JsonValue")]
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
   pub token: Option<String>,
@@ -236,6 +319,7 @@ pub struct AppendOptions {
 
 #[napi(object)]
 pub struct PatchOptions {
+  #[napi(ts_type = "JsonValue")]
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
   pub token: Option<String>,
@@ -247,7 +331,9 @@ pub struct PatchOptions {
 #[napi(object)]
 pub struct CreateAggregateOptions {
   pub token: Option<String>,
+  #[napi(ts_type = "JsonValue")]
   pub payload: Option<serde_json::Value>,
+  #[napi(ts_type = "JsonValue")]
   pub metadata: Option<serde_json::Value>,
   pub note: Option<String>,
   pub publish_targets: Option<Vec<PublishTargetOptions>>,
@@ -1099,6 +1185,57 @@ pub fn create_client(options: Option<ClientOptions>) -> DbxClient {
   DbxClient::new(options)
 }
 
+fn normalize_payload_mode(value: Option<String>) -> napi::Result<Option<String>> {
+  match value {
+    Some(value) => {
+      let normalized = value.trim().to_ascii_lowercase();
+      if normalized.is_empty() {
+        return Ok(None);
+      }
+      let matched = match normalized.as_str() {
+        "all" => Some(PayloadMode::All),
+        "event-only" => Some(PayloadMode::EventOnly),
+        "state-only" => Some(PayloadMode::StateOnly),
+        "schema-only" => Some(PayloadMode::SchemaOnly),
+        "event-and-schema" => Some(PayloadMode::EventAndSchema),
+        "extensions-only" => Some(PayloadMode::ExtensionsOnly),
+        _ => {
+          return Err(napi_err(
+            Status::InvalidArg,
+            "publish target mode must be one of: all, event-only, state-only, schema-only, event-and-schema, extensions-only",
+          ))
+        }
+      };
+      Ok(matched.map(|mode| mode.as_str().to_owned()))
+    }
+    None => Ok(None),
+  }
+}
+
+fn normalize_priority(value: Option<String>) -> napi::Result<Option<String>> {
+  match value {
+    Some(value) => {
+      let normalized = value.trim().to_ascii_lowercase();
+      if normalized.is_empty() {
+        return Ok(None);
+      }
+      let matched = match normalized.as_str() {
+        "high" => Some(Priority::High),
+        "normal" => Some(Priority::Normal),
+        "low" => Some(Priority::Low),
+        _ => {
+          return Err(napi_err(
+            Status::InvalidArg,
+            "publish target priority must be one of: high, normal, low",
+          ))
+        }
+      };
+      Ok(matched.map(|priority| priority.as_str().to_owned()))
+    }
+    None => Ok(None),
+  }
+}
+
 fn map_publish_targets(
   publish_targets: Option<Vec<PublishTargetOptions>>,
 ) -> napi::Result<Option<Vec<PublishTargetSpec>>> {
@@ -1114,51 +1251,8 @@ fn map_publish_targets(
               "publish target plugin is required",
             ));
           }
-          let mode = match target.mode {
-            Some(value) => {
-              let trimmed = value.trim();
-              if trimmed.is_empty() {
-                None
-              } else {
-                let normalized = trimmed.to_ascii_lowercase();
-                match normalized.as_str() {
-                  "all"
-                  | "event-only"
-                  | "state-only"
-                  | "schema-only"
-                  | "event-and-schema"
-                  | "extensions-only" => Some(normalized),
-                  _ => {
-                    return Err(napi_err(
-                      Status::InvalidArg,
-                      "publish target mode must be one of: all, event-only, state-only, schema-only, event-and-schema, extensions-only",
-                    ))
-                  }
-                }
-              }
-            }
-            None => None,
-          };
-          let priority = match target.priority {
-            Some(value) => {
-              let trimmed = value.trim();
-              if trimmed.is_empty() {
-                None
-              } else {
-                let normalized = trimmed.to_ascii_lowercase();
-                match normalized.as_str() {
-                  "high" | "normal" | "low" => Some(normalized),
-                  _ => {
-                    return Err(napi_err(
-                      Status::InvalidArg,
-                      "publish target priority must be one of: high, normal, low",
-                    ))
-                  }
-                }
-              }
-            }
-            None => None,
-          };
+          let mode = normalize_payload_mode(target.mode)?;
+          let priority = normalize_priority(target.priority)?;
           Ok(PublishTargetSpec {
             plugin,
             mode,

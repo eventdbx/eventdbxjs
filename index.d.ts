@@ -37,8 +37,8 @@ export declare class DbxClient {
 }
 
 export interface AppendOptions {
-  payload?: any
-  metadata?: any
+  payload?: JsonValue
+  metadata?: JsonValue
   note?: string
   token?: string
   publishTargets?: Array<PublishTargetOptions>
@@ -60,8 +60,8 @@ export interface ClientOptions {
 
 export interface CreateAggregateOptions {
   token?: string
-  payload?: any
-  metadata?: any
+  payload?: JsonValue
+  metadata?: JsonValue
   note?: string
   publishTargets?: Array<PublishTargetOptions>
 }
@@ -76,6 +76,29 @@ export interface CreateSnapshotOptions {
 export interface GetSnapshotOptions {
   token?: string
 }
+
+export type JsonPatch =
+  JsonPatchAddReplaceTest | JsonPatchRemove | JsonPatchMoveCopy
+
+export interface JsonPatchAddReplaceTest {
+  op: 'add' | 'replace' | 'test'
+  path: string
+  value: JsonValue
+}
+
+export interface JsonPatchMoveCopy {
+  op: 'move' | 'copy'
+  from: string
+  path: string
+}
+
+export interface JsonPatchRemove {
+  op: 'remove'
+  path: string
+}
+
+export type JsonValue =
+  any
 
 export interface ListSnapshotsOptions {
   aggregateType?: string
@@ -100,16 +123,31 @@ export interface PageResult {
 }
 
 export interface PatchOptions {
-  metadata?: any
+  metadata?: JsonValue
   note?: string
   token?: string
   publishTargets?: Array<PublishTargetOptions>
 }
 
+export declare const enum PayloadMode {
+  All = 'all',
+  EventOnly = 'event-only',
+  StateOnly = 'state-only',
+  SchemaOnly = 'schema-only',
+  EventAndSchema = 'event-and-schema',
+  ExtensionsOnly = 'extensions-only'
+}
+
+export declare const enum Priority {
+  High = 'high',
+  Normal = 'normal',
+  Low = 'low'
+}
+
 export interface PublishTargetOptions {
   plugin: string
-  mode?: string
-  priority?: string
+  mode?: PayloadMode
+  priority?: Priority
 }
 
 export interface RetryOptions {

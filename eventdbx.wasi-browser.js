@@ -58,3 +58,5 @@ const {
 export default __napiModule.exports
 export const DbxClient = __napiModule.exports.DbxClient
 export const createClient = __napiModule.exports.createClient
+export const PayloadMode = __napiModule.exports.PayloadMode
+export const Priority = __napiModule.exports.Priority
