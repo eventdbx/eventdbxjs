@@ -10,6 +10,18 @@ pub enum NoiseError {
   Protocol(String),
 }
 
+#[derive(Debug)]
+pub enum SessionTransport {
+  Noise(TransportState),
+  Plain,
+}
+
+impl From<TransportState> for SessionTransport {
+  fn from(state: TransportState) -> Self {
+    SessionTransport::Noise(state)
+  }
+}
+
 impl From<IoError> for NoiseError {
   fn from(value: IoError) -> Self {
     Self::Io(value)
@@ -106,6 +118,16 @@ where
   Ok(())
 }
 
+pub async fn write_plain_frame<W>(writer: &mut W, plaintext: &[u8]) -> Result<(), NoiseError>
+where
+  W: AsyncWrite + Unpin,
+{
+  ensure_plaintext_len(plaintext.len())?;
+  send_frame(writer, plaintext).await?;
+  writer.flush().await?;
+  Ok(())
+}
+
 pub async fn read_encrypted_frame<R>(
   reader: &mut R,
   state: &mut TransportState,
@@ -129,6 +151,44 @@ where
     .map_err(|err| NoiseError::Protocol(format!("failed to decrypt Noise frame: {err}")))?;
   buffer.truncate(len);
   Ok(Some(buffer))
+}
+
+pub async fn read_plain_frame<R>(reader: &mut R) -> Result<Option<Vec<u8>>, NoiseError>
+where
+  R: AsyncRead + Unpin,
+{
+  let frame = read_frame(reader).await?;
+  if let Some(ref payload) = frame {
+    ensure_plaintext_len(payload.len())?;
+  }
+  Ok(frame)
+}
+
+pub async fn write_session_frame<W>(
+  writer: &mut W,
+  transport: &mut SessionTransport,
+  payload: &[u8],
+) -> Result<(), NoiseError>
+where
+  W: AsyncWrite + Unpin,
+{
+  match transport {
+    SessionTransport::Noise(state) => write_encrypted_frame(writer, state, payload).await,
+    SessionTransport::Plain => write_plain_frame(writer, payload).await,
+  }
+}
+
+pub async fn read_session_frame<R>(
+  reader: &mut R,
+  transport: &mut SessionTransport,
+) -> Result<Option<Vec<u8>>, NoiseError>
+where
+  R: AsyncRead + Unpin,
+{
+  match transport {
+    SessionTransport::Noise(state) => read_encrypted_frame(reader, state).await,
+    SessionTransport::Plain => read_plain_frame(reader).await,
+  }
 }
 
 async fn send_frame<W>(writer: &mut W, payload: &[u8]) -> Result<(), NoiseError>
@@ -174,4 +234,14 @@ where
     }
   }
   Ok(Some(payload))
+}
+
+fn ensure_plaintext_len(len: usize) -> Result<(), NoiseError> {
+  if len > MAX_FRAME_LEN {
+    return Err(NoiseError::Protocol(format!(
+      "plaintext frame exceeds maximum size ({} bytes)",
+      MAX_FRAME_LEN
+    )));
+  }
+  Ok(())
 }

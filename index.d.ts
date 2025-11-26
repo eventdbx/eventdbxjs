@@ -31,7 +31,7 @@ export declare class DbxClient {
   /** Create a snapshot for the provided aggregate. */
   createSnapshot(aggregateType: string, aggregateId: string, options?: CreateSnapshotOptions | undefined | null): Promise<any>
   /** List snapshots with optional aggregate filters. */
-  listSnapshots(options?: ListSnapshotsOptions | undefined | null): Promise<Array<any>>
+  snapshots(options?: ListSnapshotsOptions | undefined | null): Promise<Array<any>>
   /** Fetch a snapshot by identifier. */
   getSnapshot(snapshotId: bigint | number, options?: GetSnapshotOptions | undefined | null): Promise<any | null>
 }
@@ -54,6 +54,7 @@ export interface ClientOptions {
   port?: number
   token?: string
   tenantId?: string
+  noNoise?: boolean
   verbose?: boolean
   retry?: RetryOptions
 }

@@ -60,6 +60,7 @@ async function main() {
     port: Number(process.env.EVENTDBX_PORT) || 6363,
     token: process.env.EVENTDBX_TOKEN,
     verbose: false, // set true or false for mutate response, this should match verbose_responses = false on the server config file
+    noNoise: false, // request plaintext control channel if the server allows it
     retry: {
       attempts: 3,
       initialDelayMs: 100,
@@ -151,6 +152,7 @@ The constructor falls back to environment variables when options are omitted:
 | `EVENTDBX_PORT`  | `6363`      | Control-plane TCP port               |
 | `EVENTDBX_TOKEN` | _empty_     | Authentication token sent on connect |
 | `EVENTDBX_TENANT_ID` | _empty_ | Tenant identifier included in the handshake |
+| `EVENTDBX_NO_NOISE` | `false`  | Request plaintext control frames when the server allows it |
 
 Passing explicit overrides is also supported:
 
@@ -160,6 +162,7 @@ const client = createClient({
   port: 7000,
   token: 'super-secret',
   tenantId: 'tenant-a',
+  noNoise: true, // ask the server to skip Noise encryption if configured to allow plaintext
 })
 await client.connect()
 ```
@@ -198,6 +201,7 @@ interface ClientOptions {
   port?: number
   token?: string
   tenantId?: string
+  noNoise?: boolean
   verbose?: boolean
   retry?: RetryOptions
 }
