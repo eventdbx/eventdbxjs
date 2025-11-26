@@ -11,8 +11,7 @@ const runtimeEnv: RuntimeEnv = (globalThis as RuntimeContext).process?.env ?? {}
 const baseOptions = {
   ip: '127.0.0.1',
   port: 6363,
-  token:
-    'eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6ImtleS0yMDI1MTEwOTIwNTExNiJ9.eyJpc3MiOiJldmVudGRieDovL3NlbGYiLCJhdWQiOiJldmVudGRieC1jbGllbnRzIiwic3ViIjoiY2xpOmJvb3RzdHJhcCIsImp0aSI6Ijc5Y2VmMTRmLTVjZjMtNDJhNC04NjU1LWFlMjgwOTJjZTA1ZSIsImlhdCI6MTc2MjcyMTQ3NiwiZ3JvdXAiOiJjbGkiLCJ1c2VyIjoicm9vdCIsImFjdGlvbnMiOlsiKi4qIl0sInJlc291cmNlcyI6WyIqIl0sImlzc3VlZF9ieSI6ImNsaS1ib290c3RyYXAiLCJsaW1pdHMiOnsid3JpdGVfZXZlbnRzIjpudWxsLCJrZWVwX2FsaXZlIjpmYWxzZX0sInRlbmFudHMiOltdfQ.t6QCHvxL47JwVY2eJ1izMIIREZlOFC0VWuWxiMWysj34x54OwrUpRKtSOYrOV4tmUR1AS96aDpb5n7tw66NsCg',
+  token: 'xxx',
   tenantId: runtimeEnv.EVENTDBX_TEST_TENANT_ID,
 }
 
@@ -108,7 +107,6 @@ test.before(async () => {
 
 test('client exposes expected API surface', (t) => {
   const client = buildClient()
-
   t.truthy(client)
   t.is(typeof client.connect, 'function')
   t.is(typeof client.disconnect, 'function')
@@ -122,6 +120,9 @@ test('client exposes expected API surface', (t) => {
   t.is(typeof client.archive, 'function')
   t.is(typeof client.restore, 'function')
   t.is(typeof client.patch, 'function')
+  t.is(typeof client.createSnapshot, 'function')
+  t.is(typeof client.snapshots, 'function')
+  t.is(typeof client.getSnapshot, 'function')
   t.deepEqual(client.endpoint, { ip: baseOptions.ip, port: baseOptions.port })
 })
 
@@ -177,6 +178,12 @@ const runMockedControlOperations = async (t: ExecutionContext) => {
   const createdAggregate = { ...aggregate, aggregateId: 'p-002', version: 1 }
   const archivedAggregate = { ...aggregate, archived: true }
   const restoredAggregate = { ...aggregate, archived: false }
+  const snapshotId = 42
+  const snapshot = { snapshotId, aggregateType: 'person', aggregateId: 'p-001', version: 8, state: aggregate.state }
+  const snapshots = [
+    snapshot,
+    { ...snapshot, snapshotId: 41, version: 7, state: { name: 'Jane Doe', archived: false } },
+  ]
 
   const client = buildClient()
 
@@ -313,6 +320,34 @@ const runMockedControlOperations = async (t: ExecutionContext) => {
       return patched
     },
   )
+  overrideMethod(
+    client,
+    'createSnapshot',
+    async (aggregateType: string, aggregateId: string, options: { token: string; comment: string }) => {
+      t.is(aggregateType, 'person')
+      t.is(aggregateId, 'p-001')
+      t.deepEqual(options, { token: 'custom-token', comment: 'checkpoint before migration' })
+      return snapshot
+    },
+  )
+  overrideMethod(
+    client,
+    'snapshots',
+    async (options: { aggregateType: string; aggregateId: string; version: number; token: string }) => {
+      t.deepEqual(options, {
+        aggregateType: 'person',
+        aggregateId: 'p-001',
+        version: snapshot.version,
+        token: 'custom-token',
+      })
+      return snapshots
+    },
+  )
+  overrideMethod(client, 'getSnapshot', async (id: number, options: { token: string }) => {
+    t.is(id, snapshotId)
+    t.deepEqual(options, { token: 'custom-token' })
+    return snapshot
+  })
 
   await client.connect()
   t.true(await client.isConnected())
@@ -371,6 +406,23 @@ const runMockedControlOperations = async (t: ExecutionContext) => {
     }),
     patched,
   )
+  t.deepEqual(
+    await client.createSnapshot('person', 'p-001', {
+      token: 'custom-token',
+      comment: 'checkpoint before migration',
+    }),
+    snapshot,
+  )
+  t.deepEqual(
+    await client.snapshots({
+      aggregateType: 'person',
+      aggregateId: 'p-001',
+      version: snapshot.version,
+      token: 'custom-token',
+    }),
+    snapshots,
+  )
+  t.deepEqual(await client.getSnapshot(snapshotId, { token: 'custom-token' }), snapshot)
 
   await client.disconnect()
   t.false(await client.isConnected())
@@ -427,6 +479,24 @@ const runLiveControlOperations = async (t: ExecutionContext) => {
             token: 'invalid-integration-token',
           }),
       ],
+      [
+        'createSnapshot',
+        () =>
+          client.createSnapshot('__test__', '__test__', {
+            token: 'invalid-integration-token',
+            comment: 'integration snapshot',
+          }),
+      ],
+      [
+        'snapshots',
+        () =>
+          client.snapshots({
+            aggregateType: '__test__',
+            aggregateId: '__test__',
+            token: 'invalid-integration-token',
+          }),
+      ],
+      ['getSnapshot', () => client.getSnapshot(0, { token: 'invalid-integration-token' })],
     ]
 
     for (const [label, action] of operations) {
@@ -465,6 +535,17 @@ test('control operations require an active connection', async (t) => {
     ['archive', () => client.archive('person', 'p-001', undefined)],
     ['restore', () => client.restore('person', 'p-001', undefined)],
     ['patch', () => client.patch('person', 'p-001', 'PatchEvent', [{ op: 'replace', path: '/name', value: 'Alice' }])],
+    ['createSnapshot', () => client.createSnapshot('person', 'p-001', { comment: 'should fail without connection' })],
+    [
+      'snapshots',
+      () =>
+        client.snapshots({
+          aggregateType: 'person',
+          aggregateId: 'p-001',
+          version: 1,
+        }),
+    ],
+    ['getSnapshot', () => client.getSnapshot(1)],
   ]
 
   for (const [label, action] of operations) {

@@ -13,10 +13,11 @@ use capnp::serialize::write_message_to_words;
 use capnp::struct_list::Builder as StructListBuilder;
 use chrono::{DateTime, Utc};
 use futures::io::AsyncWriteExt;
-use noise::{perform_client_handshake, read_encrypted_frame, write_encrypted_frame, NoiseError};
+use noise::{
+  perform_client_handshake, read_session_frame, write_session_frame, NoiseError, SessionTransport,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value as JsonValue};
-use snow::TransportState;
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::io::Cursor;
@@ -284,17 +285,32 @@ pub type ControlResult<T> = Result<T, ControlClientError>;
 /// Minimal client for the control socket exposed on port 6363.
 const CONTROL_PROTOCOL_VERSION: u16 = 1;
 
+#[derive(Clone, Copy)]
+pub struct ConnectOptions<'a> {
+  pub tenant_id: Option<&'a str>,
+  pub no_noise: bool,
+}
+
+impl Default for ConnectOptions<'_> {
+  fn default() -> Self {
+    Self {
+      tenant_id: None,
+      no_noise: false,
+    }
+  }
+}
+
 pub struct ControlClient {
   reader: Compat<OwnedReadHalf>,
   writer: Compat<OwnedWriteHalf>,
-  noise: TransportState,
+  transport: SessionTransport,
   next_id: u64,
 }
 
 impl ControlClient {
   /// Connect to the control socket at `addr` (e.g. `"127.0.0.1:6363"`).
   pub async fn connect(addr: &str, token: &str) -> ControlResult<Self> {
-    Self::connect_with_tenant(addr, token, None).await
+    Self::connect_with_options(addr, token, ConnectOptions::default()).await
   }
 
   /// Connect to the control socket and include an optional tenant identifier during the handshake.
@@ -303,13 +319,30 @@ impl ControlClient {
     token: &str,
     tenant_id: Option<&str>,
   ) -> ControlResult<Self> {
+    Self::connect_with_options(
+      addr,
+      token,
+      ConnectOptions {
+        tenant_id,
+        no_noise: false,
+      },
+    )
+    .await
+  }
+
+  /// Connect to the control socket with transport preferences.
+  pub async fn connect_with_options<'a>(
+    addr: &str,
+    token: &str,
+    options: ConnectOptions<'a>,
+  ) -> ControlResult<Self> {
     let token = token.trim();
     if token.is_empty() {
       return Err(ControlClientError::Protocol(
         "control token is required to establish a connection".into(),
       ));
     }
-    let tenant_id = tenant_id.and_then(|value| {
+    let tenant_id = options.tenant_id.and_then(|value| {
       let trimmed = value.trim();
       if trimmed.is_empty() {
         None
@@ -321,11 +354,12 @@ impl ControlClient {
     let (reader_half, writer_half) = stream.into_split();
     let mut reader = reader_half.compat();
     let mut writer = writer_half.compat_write();
-    let noise = send_control_handshake(&mut reader, &mut writer, token, tenant_id).await?;
+    let transport =
+      send_control_handshake(&mut reader, &mut writer, token, tenant_id, options.no_noise).await?;
     Ok(Self {
       reader,
       writer,
-      noise,
+      transport,
       next_id: 1,
     })
   }
@@ -1092,8 +1126,8 @@ impl ControlClient {
     F: FnOnce(control_capnp::control_response::Reader<'_>) -> ControlResult<T>,
   {
     let bytes = write_message_to_words(&message);
-    self.write_encrypted_message(&bytes).await?;
-    let response_bytes = self.read_encrypted_message().await?;
+    self.write_message(&bytes).await?;
+    let response_bytes = self.read_message().await?;
     let mut cursor = Cursor::new(&response_bytes);
     let response_message = capnp::serialize::read_message(&mut cursor, ReaderOptions::new())
       .map_err(ControlClientError::Capnp)?;
@@ -1112,13 +1146,13 @@ impl ControlClient {
     parser(response)
   }
 
-  async fn write_encrypted_message(&mut self, payload: &[u8]) -> ControlResult<()> {
-    write_encrypted_frame(&mut self.writer, &mut self.noise, payload).await?;
+  async fn write_message(&mut self, payload: &[u8]) -> ControlResult<()> {
+    write_session_frame(&mut self.writer, &mut self.transport, payload).await?;
     Ok(())
   }
 
-  async fn read_encrypted_message(&mut self) -> ControlResult<Vec<u8>> {
-    match read_encrypted_frame(&mut self.reader, &mut self.noise).await? {
+  async fn read_message(&mut self) -> ControlResult<Vec<u8>> {
+    match read_session_frame(&mut self.reader, &mut self.transport).await? {
       Some(bytes) => Ok(bytes),
       None => Err(ControlClientError::Protocol(
         "control connection closed unexpectedly".into(),
@@ -1184,7 +1218,8 @@ async fn send_control_handshake<R, W>(
   writer: &mut W,
   token: &str,
   tenant_id: Option<&str>,
-) -> ControlResult<TransportState>
+  no_noise: bool,
+) -> ControlResult<SessionTransport>
 where
   R: futures::io::AsyncRead + Unpin,
   W: futures::io::AsyncWrite + Unpin,
@@ -1197,6 +1232,7 @@ where
       hello.set_token(token.into());
       let tenant = tenant_id.unwrap_or("");
       hello.set_tenant_id(tenant.into());
+      hello.set_no_noise(no_noise);
     }
     write_message_to_words(&message)
   };
@@ -1209,6 +1245,7 @@ where
   let response = response_message
     .get_root::<control_capnp::control_hello_response::Reader>()
     .map_err(ControlClientError::Capnp)?;
+  let response_no_noise = response.get_no_noise();
   if !response.get_accepted() {
     let reason = read_text_field(response.get_message(), "control handshake message")?;
     return Err(ControlClientError::Protocol(format!(
@@ -1216,7 +1253,80 @@ where
     )));
   }
 
-  perform_client_handshake(reader, writer, token.as_bytes())
-    .await
-    .map_err(ControlClientError::from)
+  if response_no_noise {
+    Ok(SessionTransport::Plain)
+  } else {
+    perform_client_handshake(reader, writer, token.as_bytes())
+      .await
+      .map(SessionTransport::from)
+      .map_err(ControlClientError::from)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use capnp::message::{Builder, ReaderOptions};
+  use futures::io::AsyncWriteExt;
+  use tokio::net::{TcpListener, TcpStream};
+  use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+  #[tokio::test]
+  async fn send_control_handshake_respects_no_noise_flag() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+      .await
+      .expect("bind handshake probe listener");
+    let addr = listener.local_addr().expect("listener should have address");
+
+    let server = async {
+      let (stream, _) = listener.accept().await.expect("accept client");
+      let (read_half, write_half) = stream.into_split();
+      let mut reader = read_half.compat();
+      let mut writer = write_half.compat_write();
+
+      let message = capnp_futures::serialize::read_message(&mut reader, ReaderOptions::new())
+        .await
+        .expect("read client hello");
+      let hello = message
+        .get_root::<control_capnp::control_hello::Reader>()
+        .expect("parse client hello");
+      assert!(
+        hello.get_no_noise(),
+        "no-noise flag should propagate to handshake"
+      );
+
+      let mut response = Builder::new_default();
+      {
+        let mut hello_response =
+          response.init_root::<control_capnp::control_hello_response::Builder>();
+        hello_response.set_accepted(true);
+        hello_response.set_message("".into());
+        hello_response.set_no_noise(true);
+      }
+
+      capnp_futures::serialize::write_message(&mut writer, &response)
+        .await
+        .expect("write hello response");
+      writer.flush().await.expect("flush response");
+    };
+
+    let client = async {
+      let client_stream = TcpStream::connect(addr)
+        .await
+        .expect("connect to handshake probe");
+      let (client_reader, client_writer) = client_stream.into_split();
+      let mut reader = client_reader.compat();
+      let mut writer = client_writer.compat_write();
+
+      send_control_handshake(&mut reader, &mut writer, "token", None, true)
+        .await
+        .expect("handshake should succeed")
+    };
+
+    let (_, transport) = tokio::join!(server, client);
+    assert!(
+      matches!(transport, SessionTransport::Plain),
+      "server should allow plaintext when no-noise requested"
+    );
+  }
 }

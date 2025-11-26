@@ -12,9 +12,10 @@ use std::time::Duration;
 pub mod plugin_api;
 
 use crate::plugin_api::{
-  AggregateStateView, AppendEventRequest, ControlClient, ControlClientError, ControlResult,
-  CreateAggregateRequest, CreateSnapshotRequest, GetSnapshotRequest, ListSnapshotsRequest,
-  PatchEventRequest, PublishTargetSpec, SetAggregateArchiveRequest, StoredEventRecord,
+  AggregateStateView, AppendEventRequest, ConnectOptions, ControlClient, ControlClientError,
+  ControlResult, CreateAggregateRequest, CreateSnapshotRequest, GetSnapshotRequest,
+  ListSnapshotsRequest, PatchEventRequest, PublishTargetSpec, SetAggregateArchiveRequest,
+  StoredEventRecord,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -108,6 +109,7 @@ struct ClientConfig {
   port: u16,
   token: Option<String>,
   tenant_id: Option<String>,
+  no_noise: bool,
   verbose: bool,
   retry: RetryConfig,
 }
@@ -155,6 +157,7 @@ struct HandshakeParams {
   endpoint: String,
   token: String,
   tenant_id: Option<String>,
+  no_noise: bool,
 }
 
 impl Default for ClientConfig {
@@ -171,6 +174,9 @@ impl Default for ClientConfig {
       tenant_id: std::env::var("EVENTDBX_TENANT_ID")
         .ok()
         .filter(|value| !value.is_empty()),
+      no_noise: std::env::var("EVENTDBX_NO_NOISE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false),
       verbose: std::env::var("EVENTDBX_VERBOSE")
         .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false),
@@ -200,6 +206,7 @@ impl ClientConfig {
       endpoint: self.endpoint(),
       token: token.to_string(),
       tenant_id,
+      no_noise: self.no_noise,
     })
   }
 }
@@ -216,6 +223,8 @@ pub struct ClientOptions {
   pub token: Option<String>,
   #[napi(js_name = "tenantId")]
   pub tenant_id: Option<String>,
+  #[napi(js_name = "noNoise")]
+  pub no_noise: Option<bool>,
   pub verbose: Option<bool>,
   pub retry: Option<RetryOptions>,
 }
@@ -234,6 +243,9 @@ impl From<ClientOptions> for ClientConfig {
     }
     if let Some(tenant) = options.tenant_id {
       config.tenant_id = Some(tenant);
+    }
+    if let Some(no_noise) = options.no_noise {
+      config.no_noise = no_noise;
     }
     if let Some(verbose) = options.verbose {
       config.verbose = verbose;
@@ -405,6 +417,7 @@ impl DbxClient {
     let endpoint = params.endpoint;
     let token = params.token;
     let tenant_id = params.tenant_id;
+    let no_noise = params.no_noise;
 
     let mut guard = self.state.lock().await;
     if guard.client.is_some() {
@@ -416,8 +429,15 @@ impl DbxClient {
 
     loop {
       attempt += 1;
-      match ControlClient::connect_with_tenant(&endpoint, token.as_str(), tenant_id.as_deref())
-        .await
+      match ControlClient::connect_with_options(
+        &endpoint,
+        token.as_str(),
+        ConnectOptions {
+          tenant_id: tenant_id.as_deref(),
+          no_noise,
+        },
+      )
+      .await
       {
         Ok(client) => {
           guard.client = Some(client);
@@ -984,7 +1004,7 @@ impl DbxClient {
   }
 
   /// List snapshots with optional aggregate filters.
-  #[napi(js_name = "listSnapshots")]
+  #[napi(js_name = "snapshots")]
   pub async fn list_snapshots(
     &self,
     options: Option<ListSnapshotsOptions>,
@@ -1162,10 +1182,13 @@ impl DbxClient {
     if guard.client.is_some() {
       return Ok(());
     }
-    let client = ControlClient::connect_with_tenant(
+    let client = ControlClient::connect_with_options(
       &params.endpoint,
       params.token.as_str(),
-      params.tenant_id.as_deref(),
+      ConnectOptions {
+        tenant_id: params.tenant_id.as_deref(),
+        no_noise: params.no_noise,
+      },
     )
     .await?;
     guard.client = Some(client);
@@ -1338,6 +1361,18 @@ mod tests {
     result
   }
 
+  fn with_clean_no_noise_env<T, F: FnOnce() -> T>(f: F) -> T {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    let previous = std::env::var("EVENTDBX_NO_NOISE").ok();
+    std::env::remove_var("EVENTDBX_NO_NOISE");
+    let result = f();
+    match previous {
+      Some(value) => std::env::set_var("EVENTDBX_NO_NOISE", value),
+      None => std::env::remove_var("EVENTDBX_NO_NOISE"),
+    }
+    result
+  }
+
   #[test]
   fn client_options_respects_verbose_true() {
     with_clean_verbose_env(|| {
@@ -1346,6 +1381,7 @@ mod tests {
         port: None,
         token: None,
         tenant_id: None,
+        no_noise: None,
         verbose: Some(true),
         retry: None,
       };
@@ -1363,6 +1399,7 @@ mod tests {
         port: None,
         token: None,
         tenant_id: None,
+        no_noise: None,
         verbose: Some(false),
         retry: None,
       };
@@ -1375,12 +1412,63 @@ mod tests {
   }
 
   #[test]
+  fn client_options_respects_no_noise_true() {
+    with_clean_no_noise_env(|| {
+      let options = ClientOptions {
+        ip: None,
+        port: None,
+        token: None,
+        tenant_id: None,
+        no_noise: Some(true),
+        verbose: None,
+        retry: None,
+      };
+      let config: ClientConfig = options.into();
+      assert!(config.no_noise, "expected no-noise flag to propagate");
+    });
+  }
+
+  #[test]
+  fn client_options_respects_no_noise_false_even_with_env() {
+    with_clean_no_noise_env(|| {
+      std::env::set_var("EVENTDBX_NO_NOISE", "1");
+      let options = ClientOptions {
+        ip: None,
+        port: None,
+        token: None,
+        tenant_id: None,
+        no_noise: Some(false),
+        verbose: None,
+        retry: None,
+      };
+      let config: ClientConfig = options.into();
+      assert!(
+        !config.no_noise,
+        "explicit false should override EVENTDBX_NO_NOISE"
+      );
+    });
+  }
+
+  #[test]
+  fn default_config_reads_no_noise_env() {
+    with_clean_no_noise_env(|| {
+      std::env::set_var("EVENTDBX_NO_NOISE", "true");
+      let config = ClientConfig::default();
+      assert!(
+        config.no_noise,
+        "no-noise env var should enable plaintext transport"
+      );
+    });
+  }
+
+  #[test]
   fn retry_options_override_defaults() {
     let options = ClientOptions {
       ip: None,
       port: None,
       token: None,
       tenant_id: None,
+      no_noise: None,
       verbose: None,
       retry: Some(RetryOptions {
         attempts: Some(3),
